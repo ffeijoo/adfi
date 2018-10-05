@@ -1,0 +1,276 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AdFi Location Stack"
+
+Parameters: 
+  LocationName: 
+    Type: "String"
+    Description: "Location Name"
+  AccessKeyValue: 
+    Type: String
+    Description: "AdFi API Access Key"
+  AccessSecretValue: 
+    Type: String
+    Description: "AdFi API Access Secret"
+    NoEcho: true
+
+Resources:
+  APIAccessSecretParam:
+    Type: "Custom::ParameterStoreHelper"
+    Properties:
+      ServiceToken: !ImportValue ParameterStoreHelper
+      Type: "SecureString"
+      Name: !Sub /org/adfi/location/${LocationName}/access_secret
+      Value: !Ref AccessSecretValue
+      KeyId: !ImportValue AdFiMasterKMSKey
+  APIAccessKeyParam:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub /org/adfi/location/${LocationName}/access_key
+      Type: "String"
+      Value: !Ref AccessKeyValue
+  
+  LoginsGlueScriptGenerator:
+    Type: "Custom::GlueScriptGeneratorHelper"
+    Properties:
+      ServiceToken: !ImportValue GlueScriptGeneratorHelper
+      GlueDatabase: !ImportValue AdfiGlueDatabase
+      Location: !Ref LocationName
+      S3SourceBucket: !ImportValue AdfiResourcesS3Bucket
+      S3SourceKey: "scripts/templates/glue-logins-script"
+      S3TargetBucket: !ImportValue AdfiResourcesS3Bucket
+      S3TargetKey: !Sub "scripts/glue-logins-${LocationName}-script"
+      S3DataSinkPath: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/logins/${LocationName}"] ]
+  CuitsGlueScriptGenerator:
+    Type: "Custom::GlueScriptGeneratorHelper"
+    Properties:
+      ServiceToken: !ImportValue GlueScriptGeneratorHelper
+      GlueDatabase: !ImportValue AdfiGlueDatabase
+      Location: !Ref LocationName
+      S3SourceBucket: !ImportValue AdfiResourcesS3Bucket
+      S3SourceKey: "scripts/templates/glue-cuits-script"
+      S3TargetBucket: !ImportValue AdfiResourcesS3Bucket
+      S3TargetKey: !Sub "scripts/glue-cuits-${LocationName}-script"
+      S3DataSinkPath: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/cuits/${LocationName}"] ]
+  FblikesGlueScriptGenerator:
+    Type: "Custom::GlueScriptGeneratorHelper"
+    Properties:
+      ServiceToken: !ImportValue GlueScriptGeneratorHelper
+      GlueDatabase: !ImportValue AdfiGlueDatabase
+      Location: !Ref LocationName
+      S3SourceBucket: !ImportValue AdfiResourcesS3Bucket
+      S3SourceKey: "scripts/templates/glue-fblikes-script"
+      S3TargetBucket: !ImportValue AdfiResourcesS3Bucket
+      S3TargetKey: !Sub "scripts/glue-fblikes-${LocationName}-script"
+      S3DataSinkPath: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/fblikes/${LocationName}"] ]
+  HotspotsGlueScriptGenerator:
+    Type: "Custom::GlueScriptGeneratorHelper"
+    Properties:
+      ServiceToken: !ImportValue GlueScriptGeneratorHelper
+      GlueDatabase: !ImportValue AdfiGlueDatabase
+      Location: !Ref LocationName
+      S3SourceBucket: !ImportValue AdfiResourcesS3Bucket
+      S3SourceKey: "scripts/templates/glue-hotspots-script"
+      S3TargetBucket: !ImportValue AdfiResourcesS3Bucket
+      S3TargetKey: !Sub "scripts/glue-hotspots-${LocationName}-script"
+      S3DataSinkPath: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/hotspots/${LocationName}"] ]
+
+  RawLoginsGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-raw-${LocationName}-logins-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/adfi/logins/${LocationName}"] ]
+      TablePrefix: !Sub raw_logins_
+      Classifiers: 
+        - !ImportValue AdfiGlueClassifier
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 4 * * ? *)"
+  RawHotspotsGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-raw-${LocationName}-hotspots-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/adfi/hotspots/${LocationName}"] ]
+      TablePrefix: !Sub raw_hotspots_
+      Classifiers: 
+        - !ImportValue AdfiGlueClassifier      
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 4 * * ? *)"      
+  RawFblikesGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-raw-${LocationName}-fblikes-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/adfi/fblikes/${LocationName}"] ]
+      TablePrefix: !Sub raw_fblikes_
+      Classifiers: 
+        - !ImportValue AdfiGlueClassifier      
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 4 * * ? *)"
+  RawCuitsGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-raw-${LocationName}-cuits-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/adfi/cuits/${LocationName}"] ]
+      TablePrefix: !Sub raw_cuits_
+      Classifiers: 
+        - !ImportValue AdfiGlueClassifier      
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 4 * * ? *)"
+  ParquetLoginsGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-parquet-${LocationName}-logins-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/logins/${LocationName}"] ]
+      TablePrefix: !Sub parquet_logins_
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 6 * * ? *)"
+  ParquetHotspotsGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-parquet-${LocationName}-hotspots-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/hotspots/${LocationName}"] ]
+      TablePrefix: !Sub parquet_hotspots_   
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 6 * * ? *)"      
+  ParquetFblikesGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-parquet-${LocationName}-fblikes-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/fblikes/${LocationName}"] ]
+      TablePrefix: !Sub parquet_fblikes_
+      Classifiers: 
+        - !ImportValue AdfiGlueClassifier      
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 6 * * ? *)"
+  ParquetCuitsGlueDataCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Name: !Sub adfi-parquet-${LocationName}-cuits-crawler
+      Role: !ImportValue AdfiGlueExecutionRole
+      DatabaseName: !ImportValue AdfiGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Join [ "", ["s3://", !ImportValue "AdfiDataS3Bucket", !Sub "/glue/cuits/${LocationName}"] ]
+      TablePrefix: !Sub parquet_cuits_  
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      Schedule:
+        ScheduleExpression: "cron(0 6 * * ? *)" 
+
+  CuitsGlueJob:
+    Type: AWS::Glue::Job
+    DependsOn: CuitsGlueScriptGenerator
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: !Join [ "", ["s3://", !ImportValue "AdfiResourcesS3Bucket", !Sub "/scripts/glue-cuits-${LocationName}-script"] ]
+      DefaultArguments:
+        "--job-bookmark-option": "job-bookmark-enable"
+      AllocatedCapacity: 5
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Name: !Sub adfi-${LocationName}-cuits-job
+      Role: !ImportValue AdfiGlueExecutionRole
+  FblikesGlueJob:
+    Type: AWS::Glue::Job
+    DependsOn: FblikesGlueScriptGenerator    
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: !Join [ "", ["s3://", !ImportValue "AdfiResourcesS3Bucket", !Sub "/scripts/glue-fblikes-${LocationName}-script"] ]
+      DefaultArguments:
+        "--job-bookmark-option": "job-bookmark-enable"
+      AllocatedCapacity: 5
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Name: !Sub adfi-${LocationName}-fblikes-job
+      Role: !ImportValue AdfiGlueExecutionRole
+  HotspotsGlueJob:
+    Type: AWS::Glue::Job
+    DependsOn: HotspotsGlueScriptGenerator    
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: !Join [ "", ["s3://", !ImportValue "AdfiResourcesS3Bucket", !Sub "/scripts/glue-hotspots-${LocationName}-script"] ]
+      DefaultArguments:
+        "--job-bookmark-option": "job-bookmark-enable"
+      AllocatedCapacity: 5
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Name: !Sub adfi-${LocationName}-hotspots-job
+      Role: !ImportValue AdfiGlueExecutionRole
+  LoginsGlueJob:
+    Type: AWS::Glue::Job
+    DependsOn: LoginsGlueScriptGenerator    
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: !Join [ "", ["s3://", !ImportValue "AdfiResourcesS3Bucket", !Sub "/scripts/glue-logins-${LocationName}-script"] ]
+      DefaultArguments:
+        "--job-bookmark-option": "job-bookmark-enable"
+      AllocatedCapacity: 5
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Name: !Sub adfi-${LocationName}-logins-job
+      Role: !ImportValue AdfiGlueExecutionRole
+      
+  ScheduledJobTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Type: SCHEDULED
+      Description: DESCRIPTION_SCHEDULED
+      Schedule: cron(0 5 * * ? *)
+      Actions:
+        - JobName: !Ref CuitsGlueJob
+        - JobName: !Ref LoginsGlueJob
+        - JobName: !Ref FblikesGlueJob
+        - JobName: !Ref HotspotsGlueJob
+      Name: !Sub adfi-${LocationName}-trigger-scheduled

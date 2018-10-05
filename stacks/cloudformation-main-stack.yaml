@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AdFi Main Stack"
+Parameters: 
+  ResourcesS3Bucket: 
+    Type: "String"
+    Default: "adfi-resources"
+    Description: "Resources Repository Bucket"
+
+Resources:
+  HelperStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${ResourcesS3Bucket}/stacks/cloudformation-helper-stack.yaml
+      TimeoutInMinutes: 5
+      Parameters:
+        ResourcesS3Bucket: !Ref ResourcesS3Bucket
+  MasterKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "adfi-master-key"
+        Statement:
+          - Sid: "Enable IAM User Permissions"
+            Effect: "Allow"
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root              
+            Action:
+              - "kms:Create*"
+              - "kms:Describe*"
+              - "kms:Enable*"
+              - "kms:List*"
+              - "kms:Put*"
+              - "kms:Update*"
+              - "kms:Revoke*"
+              - "kms:Disable*"
+              - "kms:Get*"
+              - "kms:Delete*"
+              - "kms:TagResource"
+              - "kms:UntagResource"
+              - "kms:ScheduleKeyDeletion"
+              - "kms:CancelKeyDeletion"
+            Resource: '*'
+          - Sid: "Allow Use of the Key"
+            Effect: "Allow"
+            Principal:          
+              AWS: 
+                - !GetAtt [ LambdaExecutionRole, Arn ]
+                - !GetAtt [ HelperStack, Outputs.PSHelperExecutionRole]
+                - !GetAtt [ GlueExecutionRole, Arn ]
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: '*'
+  DynamoTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions: 
+        - AttributeName: "runid"
+          AttributeType: "S"
+        - AttributeName: "loc"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "runid"
+          KeyType: "HASH"
+        - AttributeName: "loc"
+          KeyType: "RANGE"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: "adfi-run-history"
+  DataS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: "Private"
+      BucketName: !Sub adfi-data-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref MasterKMSKey
+              SSEAlgorithm: "aws:kms"
+  MasterKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/adfi
+      TargetKeyId: !Ref MasterKMSKey
+  StatesExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "StatesExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource: "*"
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - !Sub lambda.amazonaws.com
+          Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+      - PolicyName: "LambdaExecutionPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+              - "s3:PutObject"
+              - "s3:GetObject"
+              - "states:StartExecution"
+              - "ssm:GetParametersByPath"
+              - "dynamodb:Query"
+              - "dynamodb:PutItem"
+            Resource: 
+              - "arn:aws:logs:*:*:*"
+              - "arn:aws:states:*:*:*"
+              - "arn:aws:ssm:*:*:parameter/*"
+              - !Sub arn:aws:s3:::adfi-data-${AWS::AccountId}/*
+              - !Sub ${DynamoTable.Arn}
+  CuitsApiLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-cuitsapi"
+      Runtime: "nodejs8.10"
+      Handler: "index.handler"
+      Timeout: 180
+      Code: 
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/cuitsapi.zip"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Environment:
+        Variables:
+          CUITS_API_URL: "https://api.adfi.co/cuits"
+          CUITS_BUCKET: !Sub adfi-data-${AWS::AccountId}
+          CUITS_KEY_PREFIX: "adfi/cuits"
+          LOGINS_TABLE_NAME: !Ref DynamoTable
+  FBLikesApiLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-fblikesapi"
+      Runtime: "nodejs8.10"
+      Handler: "index.handler"
+      MemorySize: 256
+      Timeout: 180
+      Code: 
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/fblikesapi.zip"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Environment:
+        Variables:
+          FBLIKES_API_URL: "http://api.adfi.co/fblikes"
+          FBLIKES_BUCKET: !Sub adfi-data-${AWS::AccountId}
+          FBLIKES_KEY_PREFIX: "adfi/fblikes"
+  HotspotsApiLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-hotspotsapi"
+      Runtime: "nodejs8.10"
+      Handler: "index.handler"
+      Timeout: 180
+      Code: 
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/hotspotsapi.zip"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Environment:
+        Variables:
+          HOTSPOTS_API_URL: "http://api.adfi.co/hotspots"
+          HOTSPOTS_BUCKET: !Sub adfi-data-${AWS::AccountId}
+          HOTSPOTS_KEY_PREFIX: "adfi/hotspots"
+  LoginsApiLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-loginsapi"
+      Runtime: "nodejs8.10"
+      Handler: "index.handler"
+      Timeout: 180      
+      Code: 
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/loginsapi.zip"      
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Environment:
+        Variables:
+          LOGINS_API_URL: "http://api.adfi.co/logins"
+          LOGINS_BUCKET: !Sub adfi-data-${AWS::AccountId}
+          LOGINS_KEY_PREFIX: "adfi/logins"
+          LOGINS_TABLE_NAME: !Ref DynamoTable
+  LocationIteratorLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-locationiterator"
+      Runtime: "nodejs8.10"
+      Handler: "index.iterator"
+      Timeout: 180      
+      Code: 
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/locationiterator.zip"      
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+  LocationStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      DefinitionString:
+        !Sub
+          - |-
+            {
+              "Comment": "A state machine that coordinates the location workflow",
+              "StartAt": "LocationIterator",
+              "States": {
+                "LocationIterator": {
+                  "Type": "Task",
+                  "Resource": "${iteratorArn}",
+                  "ResultPath": "$.iterator",
+                  "Next": "LocationCountReached"
+                },
+                "LocationCountReached": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.iterator.continue",
+                      "BooleanEquals": true,
+                      "Next": "LoginsApi"
+                    }
+                  ],
+                  "Default": "Wait"
+                },
+                "LoginsApi": {
+                  "Type": "Task",
+                  "Resource": "${loginsApiArn}",
+                  "ResultPath": "$.result",
+                  "Next": "FBLikesApi"
+                },
+                "FBLikesApi": {
+                  "Type": "Task",
+                  "Resource": "${fblikesApiArn}",
+                  "ResultPath": "$.empty",
+                  "Next": "HotspotsApi"
+                },
+                "HotspotsApi": {
+                  "Type": "Task",
+                  "Resource": "${hotspotsApiArn}",
+                  "ResultPath": "$.empty",
+                  "Next": "LocationIterator"
+                },
+                "Wait": {
+                  "Type": "Wait",
+                  "TimestampPath": "$.result.wait",
+                  "Next": "CuitsApi"
+                },
+                "CuitsApi": {
+                  "Type": "Task",
+                  "Resource": "${cuitsApiArn}",
+                  "ResultPath": "$.empty",
+                  "Next": "Done"
+                },
+                "Done": {
+                  "Type": "Pass",
+                  "End": true
+                }
+              }
+            }
+          - {
+              iteratorArn: !GetAtt [ LocationIteratorLambdaFunction, Arn ], 
+              loginsApiArn: !GetAtt [ LoginsApiLambdaFunction, Arn ], 
+              fblikesApiArn: !GetAtt [ FBLikesApiLambdaFunction, Arn ], 
+              hotspotsApiArn: !GetAtt [ HotspotsApiLambdaFunction, Arn ], 
+              cuitsApiArn: !GetAtt [ CuitsApiLambdaFunction, Arn ] 
+            }
+      RoleArn: !GetAtt [ StatesExecutionRole, Arn ]
+  DayIteratorLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-dayiterator"
+      Runtime: "nodejs8.10"
+      Handler: "index.iterator"
+      Timeout: 180
+      Code:
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/dayiterator.zip"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+  SMDispatcherLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "adfi-smdispatcher"
+      Runtime: "nodejs8.10"
+      Handler: "index.handler"
+      Timeout: 180
+      Code:
+        S3Bucket: !Ref ResourcesS3Bucket
+        S3Key: "code/smdispatcher.zip"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Environment:
+        Variables:
+          LOCATION_STEP_FUNCTIONS_ARN: !Ref "LocationStateMachine"
+  DayStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString:
+        !Sub
+          - |-
+            {
+              "Comment": "A state machine that coordinates the daily workflow",
+              "StartAt": "DayIterator",
+              "States": {
+                "DayIterator": {
+                  "Type": "Task",
+                  "Resource": "${iteratorArn}",
+                  "ResultPath": "$.iterator",
+                  "Next": "DayCountReached"
+                },
+                "DayCountReached": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.iterator.continue",
+                      "BooleanEquals": true,
+                      "Next": "LocationSMDispatcher"
+                    }
+                  ],
+                  "Default": "Done"
+                },
+                "LocationSMDispatcher": {
+                  "Type": "Task",
+                  "Resource": "${smDispatcherArn}",
+                  "ResultPath": "$.result",
+                  "Next": "DayIterator"
+                },
+                "Done": {
+                  "Type": "Pass",
+                  "End": true
+                }
+              }
+            }
+          - {
+              iteratorArn: !GetAtt [ DayIteratorLambdaFunction, Arn ],
+              smDispatcherArn: !GetAtt [ SMDispatcherLambdaFunction, Arn ]
+            }
+      RoleArn: !GetAtt [ StatesExecutionRole, Arn ]
+
+  GlueExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - !Sub glue.amazonaws.com
+          Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+      - PolicyName: "S3AccessPolicy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - "s3:ListBucket"
+              - "s3:GetObject"
+              - "s3:PutObject"
+              - "s3:DeleteObject"
+            Resource:
+              - !Sub arn:aws:s3:::${ResourcesS3Bucket}/*
+              - !Sub arn:aws:s3:::adfi-data-${AWS::AccountId}/*
+  GlueDatabase:
+    Type: "AWS::Glue::Database"
+    Properties:
+      DatabaseInput:
+        Name: "adfi"
+      CatalogId: !Ref AWS::AccountId
+  GlueClassifier:
+    Type: "AWS::Glue::Classifier"
+    Properties:
+      JsonClassifier:
+        Name: "adfi-classifier"
+        JsonPath: "$[*]"
+
+  ExecuteStateMachineRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "events.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "StatesExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "states:StartExecution"
+                Resource: "*"
+  CloudWatchEventRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "AdFi Ingest ScheduledRule"
+      ScheduleExpression: "cron(0 3 * * ? *)"
+      State: "ENABLED"
+      Targets: 
+        - Arn: !Ref DayStateMachine
+          Id: "SFN_Target"
+          RoleArn: !GetAtt [ExecuteStateMachineRole, Arn]
+
+Outputs:
+  MasterKMSKey:
+    Value: !Ref MasterKMSKey
+    Export:
+      Name: AdFiMasterKMSKey
+  GlueExecutionRole:
+    Value: !GetAtt [GlueExecutionRole, Arn]
+    Export:
+      Name: AdfiGlueExecutionRole
+  GlueDatabase:
+    Value: !Ref GlueDatabase
+    Export:
+      Name: AdfiGlueDatabase
+  GlueClassifier:
+    Value: !Ref GlueClassifier
+    Export:
+      Name: AdfiGlueClassifier
+  ResourcesS3Bucket:
+    Value: !Ref ResourcesS3Bucket
+    Export:
+      Name: AdfiResourcesS3Bucket
+  DataS3Bucket:
+    Value: !Ref DataS3Bucket
+    Export:
+      Name: AdfiDataS3Bucket
